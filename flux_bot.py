@@ -34,12 +34,13 @@ NODE_IDS = {
     "clip_text": "6",
     "seed": "25"
 }
+GENERATION_TIME_MINUTES = 5
 
 manager = ComfyAPIManager(SERVER_ADDRESS, CONDA_ENV, COMFYUI_PATH, WORKFLOW_PATH, NODE_IDS)
 user_data = {}
-generation_lock = asyncio.Lock()
+job_queue = asyncio.Queue()
 
-# --- New Helper Functions ---
+# --- Helper Functions ---
 
 def cleanup_workspace():
     """Removes leftover image files from previous runs at startup."""
@@ -65,11 +66,17 @@ def log_generation():
 
 # --- Core Bot Logic ---
 
-async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: int, prompt: str, image_path: str):
-    """The central function to run the ComfyUI workflow, protected by a lock and run in a separate thread."""
-    async with generation_lock:
+async def worker():
+    """The single consumer that processes jobs from the queue one by one."""
+    while True:
+        job = await job_queue.get()
+        chat_id = job["chat_id"]
+        prompt = job["prompt"]
+        image_path = job["image_path"]
+        context = job["context"]
+
         try:
-            await context.bot.send_message(chat_id, "✅ Your turn! Starting generation process... This will take around 5 minutes.")
+            await context.bot.send_message(chat_id, f"✅ Your turn! Starting generation process... This will take around {GENERATION_TIME_MINUTES} minutes.")
             
             output_image_path = await asyncio.to_thread(
                 manager.run_workflow,
@@ -82,9 +89,7 @@ async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: in
                 await context.bot.send_message(chat_id, "Generation complete! Sending your image...")
                 await context.bot.send_photo(chat_id, photo=open(output_image_path, 'rb'))
             else:
-                # This 'else' block will now be reached if the process was killed
-                # and didn't produce an output, so no extra message is needed here.
-                pass
+                logger.warning(f"Workflow for chat {chat_id} did not produce an output file.")
 
         except Exception as e:
             logger.error(f"An error occurred during generation for chat {chat_id}: {e}")
@@ -97,9 +102,7 @@ async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             if 'output_image_path' in locals() and os.path.exists(output_image_path):
                 os.remove(output_image_path)
             
-            # This is a safer way to remove the user from the dict
-            user_data.pop(chat_id, None)
-
+            job_queue.task_done()
 
 # --- Telegram Handlers ---
 
@@ -108,56 +111,60 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     logger.warning(f"Kill command issued by user {chat_id}.")
     
-    # Check if a process is actually running
-    if not generation_lock.locked():
-        await update.message.reply_text("No generation process is currently running.")
-        return
-
-    # Create a copy of user data before clearing it
-    queued_users = dict(user_data)
-    user_data.clear()
-
-    # Kill the server process
+    jobs_cleared = 0
+    waiting_jobs = []
+    while not job_queue.empty():
+        try:
+            waiting_jobs.append(job_queue.get_nowait())
+            jobs_cleared += 1
+        except asyncio.QueueEmpty:
+            break
+    
     manager.kill_server()
+    await update.message.reply_text(f"🚨 Server process killed. {jobs_cleared} job(s) in the queue were cleared.")
 
-    await update.message.reply_text("🚨 The generation process has been... terminated. The queue is cleared.")
-
-    # Notify all users who were in the queue
-    for user_id, data in queued_users.items():
-        # Clean up the input file for the queued user
-        if "image_path" in data and os.path.exists(data["image_path"]):
-            os.remove(data["image_path"])
+    for job in waiting_jobs:
+        user_id_to_notify = job["chat_id"]
+        image_to_delete = job["image_path"]
+        if os.path.exists(image_to_delete):
+            os.remove(image_to_delete)
         
-        # Send a funny message
         try:
             await context.bot.send_message(
-                user_id,
+                user_id_to_notify,
                 "Looks like the admin tripped over the power cord. 🔌\n\n"
                 "The generation process has been abruptly stopped. Please submit your request again."
             )
         except Exception as e:
-            logger.error(f"Failed to send kill notification to {user_id}: {e}")
-
+            logger.error(f"Failed to send kill notification to {user_id_to_notify}: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    welcome_message = (
-        f"Hi {user.first_name}!\n\n"
-        "I am a bot that can reimagine an image based on your text prompt, using a FLUX workflow.\n\n"
-        "To get started, please send me an image with your prompt written in the caption. "
-        "If I am busy with another request, yours will be added to a queue."
+    await update.message.reply_html(
+        f"Hi {user.first_name}!\n\nI am a bot that can reimagine an image based on your text prompt. "
+        "If I am busy, your request will be added to a queue and you'll be notified of your position."
     )
-    await update.message.reply_html(welcome_message)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "How to use this bot:\n\n"
-        "1. **Easiest way:** Send an image and type your creative prompt in the image caption.\n\n"
-        "2. **Alternate way:** Send an image first, and I will ask for a prompt. Then, send the prompt in a separate message.\n\n"
-        "3. **Another way:** Send a text prompt first, and I will ask for an image. Then, send the image in a separate message.\n\n"
+    await update.message.reply_html(
+        "<b>How to use this bot:</b>\n\n"
+        "1. **Easiest way:** Send an image and type your prompt in the caption.\n"
+        "2. **Alternate ways:** Send an image or a prompt first, and I will ask for the other piece.\n\n"
         "Your request will be processed in the order it was received."
     )
-    await update.message.reply_html(help_text)
+
+async def handle_request(context: ContextTypes.DEFAULT_TYPE, chat_id: int, prompt: str, image_path: str):
+    """Adds a job to the queue and notifies the user of their position."""
+    position = job_queue.qsize() + 1
+    wait_time = (position - 1) * GENERATION_TIME_MINUTES
+
+    if wait_time > 0:
+        await context.bot.send_message(chat_id, f"Got it! You are number **{position}** in the queue.\nEstimated wait time is ~{wait_time} minutes.", parse_mode='Markdown')
+    else:
+        await context.bot.send_message(chat_id, "Got it! Your request is next in line.")
+    
+    job = {"chat_id": chat_id, "prompt": prompt, "image_path": image_path, "context": context}
+    await job_queue.put(job)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -165,11 +172,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat_id in user_data and user_data[chat_id]["state"] == "awaiting_prompt":
         image_path = user_data[chat_id]["image_path"]
-        await update.message.reply_text("Got it! Your request has been added to the queue.")
-        asyncio.create_task(run_generation_process(context, chat_id, prompt, image_path))
+        user_data.pop(chat_id, None)
+        await handle_request(context, chat_id, prompt, image_path)
     else:
         user_data[chat_id] = {"state": "awaiting_image", "prompt": prompt}
-        await update.message.reply_text("Got your prompt! Now, please send me the image you want me to work on.")
+        await update.message.reply_text("Got your prompt! Now, please send me the image.")
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -181,26 +188,30 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = update.message.caption
 
     if prompt:
-        await update.message.reply_text("Got it! Your request has been added to the queue.")
-        asyncio.create_task(run_generation_process(context, chat_id, prompt, image_path))
+        await handle_request(context, chat_id, prompt, image_path)
     elif chat_id in user_data and user_data[chat_id]["state"] == "awaiting_image":
         saved_prompt = user_data[chat_id]["prompt"]
-        await update.message.reply_text("Got it! Your request has been added to the queue.")
-        asyncio.create_task(run_generation_process(context, chat_id, saved_prompt, image_path))
+        user_data.pop(chat_id, None)
+        await handle_request(context, chat_id, saved_prompt, image_path)
     else:
         user_data[chat_id] = {"state": "awaiting_prompt", "image_path": image_path}
         await update.message.reply_text("Got your image! Now, please send me a text prompt for it.")
 
+# --- New: post_init function to start background tasks ---
+async def post_init(application: Application):
+    """A callback to run after the application is initialized."""
+    logger.info("Application initialized. Starting background worker.")
+    asyncio.create_task(worker())
+
 def main():
     """Start the bot."""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # The post_init parameter will run our async function after the event loop is ready
+    application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
-    # Add the new /kill command handler
+    # Add all handlers
     application.add_handler(CommandHandler("kill", kill))
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
 
