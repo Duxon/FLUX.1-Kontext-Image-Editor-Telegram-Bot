@@ -10,6 +10,7 @@ import requests
 import subprocess
 import time
 import socket
+import signal
 
 class ComfyAPIManager:
     """A class to manage the ComfyUI server and workflow execution."""
@@ -19,12 +20,10 @@ class ComfyAPIManager:
         self.client_id = str(uuid.uuid4())
         self.server_process = None
         
-        # Paths and Environment
         self.conda_env_name = conda_env
         self.comfyui_path = comfyui_path
         self.workflow_api_json_path = workflow_path
         
-        # Node IDs
         self.load_image_node_id = node_ids["load_image"]
         self.clip_text_node_id = node_ids["clip_text"]
 
@@ -49,10 +48,15 @@ class ComfyAPIManager:
             "python", "main.py", "--lowvram", "--listen", "0.0.0.0"
         ]
         
-        self.server_process = subprocess.Popen(command, cwd=self.comfyui_path)
+        # Start the server in a new process session to manage it and its children together
+        self.server_process = subprocess.Popen(
+            command, 
+            cwd=self.comfyui_path,
+            start_new_session=True
+        )
         
         print("Waiting for server to start...", end="", flush=True)
-        for _ in range(30): # Wait up to 30 seconds
+        for _ in range(30):
             time.sleep(1)
             print(".", end="", flush=True)
             if self._is_server_running():
@@ -65,19 +69,20 @@ class ComfyAPIManager:
 
     def _stop_server(self):
         if self.server_process:
-            print("Shutting down ComfyUI server...")
+            print("Shutting down ComfyUI server process group...")
             try:
-                # First, try a graceful shutdown
-                self.server_process.terminate()
-                # Wait up to 5 seconds for the process to terminate
-                self.server_process.wait(timeout=5)
-                print("Server shut down gracefully.")
-            except subprocess.TimeoutExpired:
-                # If it doesn't terminate, force kill it
-                print("Server did not respond to terminate signal. Force killing...")
-                self.server_process.kill()
-                self.server_process.wait() # Wait for the kill to complete
-                print("Server force killed.")
+                # Get the process group ID (PGID) and send SIGTERM to the entire group
+                pgid = os.getpgid(self.server_process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                # Wait for a moment for graceful shutdown
+                time.sleep(3)
+                # Force kill if still running
+                os.killpg(pgid, signal.SIGKILL)
+                print("Server process group terminated.")
+            except ProcessLookupError:
+                print("Server process was already shut down.")
+            except Exception as e:
+                print(f"An error occurred during server shutdown: {e}")
             finally:
                 self.server_process = None
 
@@ -105,7 +110,7 @@ class ComfyAPIManager:
         with urllib.request.urlopen(f"http://{self.server_address}/history/{prompt_id}") as response:
             return json.loads(response.read())
 
-    def run_workflow(self, input_image_path, positive_prompt, output_filename="output.png"):
+    def run_workflow(self, input_image_path, positive_prompt, output_filename="flux_output.png"):
         """
         Starts the server, runs the workflow, and stops the server.
         Returns the path to the generated output image.
@@ -113,16 +118,13 @@ class ComfyAPIManager:
         try:
             self._start_server()
 
-            # 1. Upload image and load workflow
             uploaded_filename = self._upload_image(input_image_path)
             with open(self.workflow_api_json_path, 'r', encoding='utf-8') as f:
                 prompt = json.load(f)
 
-            # 2. Modify workflow
             prompt[self.load_image_node_id]["inputs"]["image"] = uploaded_filename
             prompt[self.clip_text_node_id]["inputs"]["text"] = positive_prompt
 
-            # 3. Queue prompt and listen on WebSocket
             ws = websocket.WebSocket()
             ws.connect(f"ws://{self.server_address}/ws?clientId={self.client_id}")
             prompt_id = self._queue_prompt(prompt)['prompt_id']
@@ -139,7 +141,6 @@ class ComfyAPIManager:
                 ws.close()
             print("Execution finished.")
 
-            # 4. Fetch the result
             history = self._get_history(prompt_id)[prompt_id]
             for node_id in history['outputs']:
                 if 'images' in history['outputs'][node_id]:
