@@ -4,6 +4,8 @@ A Python-based Telegram bot for on-demand execution of ComfyUI FLUX workflows, f
 
 This bot listens for image and prompt submissions on Telegram, spins up the ComfyUI server to handle the job, returns the generated image, and then shuts the server down, saving system resources.
 
+![Example of image generation with FLUX.1 Kontext Image Editor Telegram Bot](example.jpg)
+
 ---
 
 ### ✨ Features
