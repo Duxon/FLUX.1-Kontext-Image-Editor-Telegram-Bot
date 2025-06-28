@@ -1,5 +1,7 @@
 # TeleFlux 🚀 — A Telegram bot that serves a FLUX.1 ComfyUI Workflow for convenient self-hosting
 
+FLUX.1-Kontext enables the power of AI photo editing on the go!
+
 A Python-based Telegram bot for on-demand execution of ComfyUI FLUX workflows, featuring a robust job queue and automatic server lifecycle management. Ideal for running heavy AI models on a personal machine without leaving the server running 24/7.
 
 This bot listens for image and prompt submissions on Telegram, spins up the ComfyUI server to handle the job, returns the generated image, and then shuts the server down, saving system resources.
