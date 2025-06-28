@@ -173,6 +173,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         f"Hi {user.first_name}!\n\nI am a bot that can reimagine an image based on your text prompt. "
         "If I am busy, your request will be added to a queue and you'll be notified of your position."
+        "And by the way, I'm deleting all data immediately after processing."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

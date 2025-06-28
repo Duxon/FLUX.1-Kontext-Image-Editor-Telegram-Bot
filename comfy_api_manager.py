@@ -56,7 +56,7 @@ class ComfyAPIManager:
         )
         
         print("Waiting for server to start...", end="", flush=True)
-        for _ in range(30):
+        for _ in range(60):
             time.sleep(1)
             print(".", end="", flush=True)
             if self._is_server_running():
