@@ -10,3 +10,4 @@ venv/
 # Ignore generated images and logs
 *.png
 generation_log.txt
+*.service

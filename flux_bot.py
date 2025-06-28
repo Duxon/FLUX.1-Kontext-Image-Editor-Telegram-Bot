@@ -106,6 +106,36 @@ async def worker():
 
 # --- Telegram Handlers ---
 
+async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """An undocumented command to show the last 20 log entries."""
+    logger.info(f"/log command issued by user {update.effective_user.id}")
+    log_file_path = "generation_log.txt"
+    num_lines = 20
+
+    try:
+        if not os.path.exists(log_file_path):
+            await update.message.reply_text("No log file found yet.")
+            return
+
+        with open(log_file_path, "r") as f:
+            lines = f.readlines()
+
+        if not lines:
+            await update.message.reply_text("The log file is empty.")
+            return
+
+        recent_lines = lines[-num_lines:]
+        log_content = "".join(recent_lines)
+        
+        # Using Markdown to format the log as a code block
+        message = f"Here are the last {len(recent_lines)} log entries:\n```\n{log_content}```"
+        await update.message.reply_text(message, parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Error reading log file: {e}")
+        await update.message.reply_text("Sorry, there was an error reading the log file.")
+
+
 async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kills the running ComfyUI process and clears the queue."""
     chat_id = update.message.chat_id
@@ -205,10 +235,10 @@ async def post_init(application: Application):
 
 def main():
     """Start the bot."""
-    # The post_init parameter will run our async function after the event loop is ready
     application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
-    # Add all handlers
+    # Add all handlers, including the new /log command
+    application.add_handler(CommandHandler("log", log_command))
     application.add_handler(CommandHandler("kill", kill))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
