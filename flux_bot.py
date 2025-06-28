@@ -44,7 +44,6 @@ generation_lock = asyncio.Lock()
 def cleanup_workspace():
     """Removes leftover image files from previous runs at startup."""
     logger.info("Cleaning up workspace from previous runs...")
-    # Find all files matching the patterns
     input_files = glob.glob("input_*.png")
     output_files = glob.glob("flux_output.png")
     
@@ -79,29 +78,66 @@ async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             )
 
             if output_image_path and os.path.exists(output_image_path):
-                # Log the successful generation before sending
                 log_generation()
-                
                 await context.bot.send_message(chat_id, "Generation complete! Sending your image...")
                 await context.bot.send_photo(chat_id, photo=open(output_image_path, 'rb'))
             else:
-                await context.bot.send_message(chat_id, "Sorry, something went wrong during generation and no image was produced.")
+                # This 'else' block will now be reached if the process was killed
+                # and didn't produce an output, so no extra message is needed here.
+                pass
 
         except Exception as e:
             logger.error(f"An error occurred during generation for chat {chat_id}: {e}")
             await context.bot.send_message(chat_id, f"An error occurred: {e}")
         
         finally:
-            logger.info("Cleaning up image files.")
+            logger.info(f"Cleaning up files for chat {chat_id}.")
             if os.path.exists(image_path):
                 os.remove(image_path)
             if 'output_image_path' in locals() and os.path.exists(output_image_path):
                 os.remove(output_image_path)
             
-            if chat_id in user_data:
-                del user_data[chat_id]
+            # This is a safer way to remove the user from the dict
+            user_data.pop(chat_id, None)
 
-# --- Telegram Handlers (No changes here) ---
+
+# --- Telegram Handlers ---
+
+async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kills the running ComfyUI process and clears the queue."""
+    chat_id = update.message.chat_id
+    logger.warning(f"Kill command issued by user {chat_id}.")
+    
+    # Check if a process is actually running
+    if not generation_lock.locked():
+        await update.message.reply_text("No generation process is currently running.")
+        return
+
+    # Create a copy of user data before clearing it
+    queued_users = dict(user_data)
+    user_data.clear()
+
+    # Kill the server process
+    manager.kill_server()
+
+    await update.message.reply_text("🚨 The generation process has been... terminated. The queue is cleared.")
+
+    # Notify all users who were in the queue
+    for user_id, data in queued_users.items():
+        # Clean up the input file for the queued user
+        if "image_path" in data and os.path.exists(data["image_path"]):
+            os.remove(data["image_path"])
+        
+        # Send a funny message
+        try:
+            await context.bot.send_message(
+                user_id,
+                "Looks like the admin tripped over the power cord. 🔌\n\n"
+                "The generation process has been abruptly stopped. Please submit your request again."
+            )
+        except Exception as e:
+            logger.error(f"Failed to send kill notification to {user_id}: {e}")
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -155,10 +191,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[chat_id] = {"state": "awaiting_prompt", "image_path": image_path}
         await update.message.reply_text("Got your image! Now, please send me a text prompt for it.")
 
-def run_bot():
-    """The main function to set up and run the bot."""
+def main():
+    """Start the bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Add the new /kill command handler
+    application.add_handler(CommandHandler("kill", kill))
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
 
@@ -169,7 +208,5 @@ def run_bot():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    # Clean up workspace before starting the bot
     cleanup_workspace()
-    # Run the bot
-    run_bot()
+    main()

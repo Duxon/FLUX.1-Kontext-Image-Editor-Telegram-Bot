@@ -82,6 +82,10 @@ class ComfyAPIManager:
                 print(f"An error occurred during server shutdown: {e}")
             finally:
                 self.server_process = None
+    
+    def kill_server(self):
+        """Public method to safely stop the server."""
+        self._stop_server()
 
     def _upload_image(self, filepath):
         filename = os.path.basename(filepath)
@@ -119,10 +123,8 @@ class ComfyAPIManager:
             with open(self.workflow_api_json_path, 'r', encoding='utf-8') as f:
                 prompt = json.load(f)
 
-            # --- New: Use ComfyUI's built-in randomization ---
             print("Setting seed node to randomize for this run.")
             prompt[self.seed_node_id]["inputs"]["control_after_generate"] = "randomize"
-            # --- End new section ---
 
             prompt[self.load_image_node_id]["inputs"]["image"] = uploaded_filename
             prompt[self.clip_text_node_id]["inputs"]["text"] = positive_prompt
