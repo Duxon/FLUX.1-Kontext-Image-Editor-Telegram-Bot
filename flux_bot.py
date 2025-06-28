@@ -76,7 +76,7 @@ async def worker():
         context = job["context"]
 
         try:
-            await context.bot.send_message(chat_id, f"✅ Your turn! Starting generation process... This will take around {GENERATION_TIME_MINUTES} minutes.")
+            await context.bot.send_message(chat_id, f"✅ Starting generation process... This will take around {GENERATION_TIME_MINUTES} minutes.")
             
             output_image_path = await asyncio.to_thread(
                 manager.run_workflow,
@@ -148,8 +148,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "<b>How to use this bot:</b>\n\n"
-        "1. **Easiest way:** Send an image and type your prompt in the caption.\n"
-        "2. **Alternate ways:** Send an image or a prompt first, and I will ask for the other piece.\n\n"
+        "1. Easiest way: Send an image and type your prompt in the caption.\n"
+        "2. Alternate ways: Send an image or a prompt first, and I will ask for the other piece.\n\n"
         "Your request will be processed in the order it was received."
     )
 
