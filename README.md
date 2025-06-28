@@ -28,7 +28,6 @@ This bot listens for image and prompt submissions on Telegram, spins up the Comf
 ├── FLUX-Kontext-Python.json    # Your ComfyUI workflow in API format
 ├── .env                        # Example environment file
 ├── .gitignore                  # Git ignore file for security and cleanliness
-├── flux_bot.service            # Systemd service unit file for deployment
 └── generation_log.txt          # (auto-generated) Log of successful generations
 ```
 
