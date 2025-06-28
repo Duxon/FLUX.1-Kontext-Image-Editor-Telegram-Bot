@@ -40,8 +40,8 @@ Follow these steps to get your own instance of TeleFlux running.
 
 **1. Clone the Repository**
 ```bash
-git clone <your-repository-url>
-cd TeleFlux
+git clone [<your-repository-url>](https://github.com/Duxon/FLUX.1-Kontext-Image-Editor-Telegram-Bot.git)
+cd FLUX.1-Kontext-Image-Editor-Telegram-Bot
 ```
 
 **2. Set Up the Conda Environment**
