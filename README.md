@@ -1,4 +1,4 @@
-# TeleFlux 🚀 -- A Telegram bot that serves a FLUX.1 ComfyUI Workflow for convenient self-hosting
+# TeleFlux 🚀 — A Telegram bot that serves a FLUX.1 ComfyUI Workflow for convenient self-hosting
 
 A Python-based Telegram bot for on-demand execution of ComfyUI FLUX workflows, featuring a robust job queue and automatic server lifecycle management. Ideal for running heavy AI models on a personal machine without leaving the server running 24/7.
 
@@ -26,7 +26,7 @@ This bot listens for image and prompt submissions on Telegram, spins up the Comf
 ├── comfy_api_manager.py        # Library for interfacing with the ComfyUI API
 ├── flux_bot.py                 # The main Telegram bot application
 ├── FLUX-Kontext-Python.json    # Your ComfyUI workflow in API format
-├── .env.example                # Example environment file
+├── .env                        # Example environment file
 ├── .gitignore                  # Git ignore file for security and cleanliness
 ├── flux_bot.service            # Systemd service unit file for deployment
 └── generation_log.txt          # (auto-generated) Log of successful generations
@@ -55,11 +55,8 @@ pip install python-telegram-bot python-dotenv websocket-client requests
 
 **3. Configure Your Bot**
 
-* **API Token:** Rename the `.env.example` file to `.env`:
-    ```bash
-    mv .env.example .env
-    ```
-    Now, edit the `.env` file and paste your Telegram Bot API token.
+* **API Token:** 
+    Edit the `.env` file and paste your Telegram Bot API token.
 
 * **Paths:** Open `flux_bot.py` and review the configuration section. You **must** update these two paths to match your system:
     ```python
@@ -82,38 +79,6 @@ conda activate comfyui
 # Run the bot
 python flux_bot.py
 ```
-
-**B) As a Systemd Service (for production)**
-
-This will make the bot run automatically in the background and restart on boot.
-
-1.  **Edit the service file:** Make sure the paths in `flux_bot.service` are correct for your system (they should be if you followed the setup above).
-
-2.  **Install and start the service:**
-    ```bash
-    # Copy the service file to the systemd directory
-    sudo cp flux_bot.service /etc/systemd/system/flux_bot.service
-
-    # Reload systemd to recognize the new service
-    sudo systemctl daemon-reload
-
-    # Enable the service to start on boot
-    sudo systemctl enable flux_bot.service
-
-    # Start the service now
-    sudo systemctl start flux_bot.service
-    ```
-
-3.  **Check the status and logs:**
-    ```bash
-    # Check if it's running correctly
-    sudo systemctl status flux_bot.service
-
-    # View live logs
-    sudo journalctl -u flux_bot.service -f
-    ```
-
----
 
 ### 🤖 Usage
 
