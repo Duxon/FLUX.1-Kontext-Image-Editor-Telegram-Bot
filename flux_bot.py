@@ -3,7 +3,7 @@
 import logging
 import os
 import uuid
-import asyncio  # <-- Import asyncio
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -35,21 +35,22 @@ NODE_IDS = {
 
 manager = ComfyAPIManager(SERVER_ADDRESS, CONDA_ENV, COMFYUI_PATH, WORKFLOW_PATH, NODE_IDS)
 user_data = {}
-
-# --- New: Concurrency Control ---
-# A lock to ensure only one generation process runs at a time.
 generation_lock = asyncio.Lock()
 
 # --- Core Bot Logic ---
 
 async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: int, prompt: str, image_path: str):
-    """The central function to run the ComfyUI workflow, protected by a lock."""
-    # This async with block ensures only one coroutine can execute this code at a time.
+    """The central function to run the ComfyUI workflow, protected by a lock and run in a separate thread."""
     async with generation_lock:
         try:
+            # Use the user's preferred message string
             await context.bot.send_message(chat_id, "✅ Your turn! Starting generation process... This will take around 5 minutes.")
             
-            output_image_path = manager.run_workflow(
+            # --- This is the critical fix ---
+            # Run the synchronous, blocking function in a separate thread
+            # This frees up the main event loop to handle other messages.
+            output_image_path = await asyncio.to_thread(
+                manager.run_workflow,
                 input_image_path=image_path,
                 positive_prompt=prompt
             )
@@ -103,7 +104,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in user_data and user_data[chat_id]["state"] == "awaiting_prompt":
         image_path = user_data[chat_id]["image_path"]
         await update.message.reply_text("Got it! Your request has been added to the queue.")
-        await run_generation_process(context, chat_id, prompt, image_path)
+        # We don't await the full process here, just schedule it
+        asyncio.create_task(run_generation_process(context, chat_id, prompt, image_path))
     else:
         user_data[chat_id] = {"state": "awaiting_image", "prompt": prompt}
         await update.message.reply_text("Got your prompt! Now, please send me the image you want me to work on.")
@@ -119,16 +121,17 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if prompt:
         await update.message.reply_text("Got it! Your request has been added to the queue.")
-        await run_generation_process(context, chat_id, prompt, image_path)
+        asyncio.create_task(run_generation_process(context, chat_id, prompt, image_path))
     elif chat_id in user_data and user_data[chat_id]["state"] == "awaiting_image":
         saved_prompt = user_data[chat_id]["prompt"]
         await update.message.reply_text("Got it! Your request has been added to the queue.")
-        await run_generation_process(context, chat_id, saved_prompt, image_path)
+        asyncio.create_task(run_generation_process(context, chat_id, saved_prompt, image_path))
     else:
         user_data[chat_id] = {"state": "awaiting_prompt", "image_path": image_path}
         await update.message.reply_text("Got your image! Now, please send me a text prompt for it.")
 
 def main():
+    """Start the bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
