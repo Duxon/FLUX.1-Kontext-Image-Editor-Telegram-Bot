@@ -12,7 +12,8 @@ WORKFLOW_PATH = "FLUX-Kontext-Python.json"
 SERVER_ADDRESS = "127.0.0.1:8188"
 NODE_IDS = {
     "load_image": "41",
-    "clip_text": "6"
+    "clip_text": "6",
+    "seed": "25"
 }
 
 # 1. Instantiate the manager once when the bot starts
@@ -26,7 +27,6 @@ def handle_telegram_request(user_image_path, user_prompt):
     print(f"Received request. Image: {user_image_path}, Prompt: '{user_prompt}'")
     
     # Each request triggers a full start-run-stop cycle.
-    # The output filename is now handled by the manager's default.
     output_image = manager.run_workflow(
         input_image_path=user_image_path,
         positive_prompt=user_prompt
@@ -36,7 +36,6 @@ def handle_telegram_request(user_image_path, user_prompt):
         print(f"Workflow complete. Result saved to: {output_image}")
         # In a real bot, you would send this image file back to the user
         # send_image_to_telegram_user(output_image)
-        # os.remove(output_image) # You might not want to remove it if you always overwrite it
     else:
         print("Workflow failed to produce an image.")
         # send_error_message_to_user()

@@ -26,6 +26,7 @@ class ComfyAPIManager:
         
         self.load_image_node_id = node_ids["load_image"]
         self.clip_text_node_id = node_ids["clip_text"]
+        self.seed_node_id = node_ids["seed"]
 
     def _is_server_running(self):
         host, port = self.server_address.split(':')
@@ -48,7 +49,6 @@ class ComfyAPIManager:
             "python", "main.py", "--lowvram", "--listen", "0.0.0.0"
         ]
         
-        # Start the server in a new process session to manage it and its children together
         self.server_process = subprocess.Popen(
             command, 
             cwd=self.comfyui_path,
@@ -71,12 +71,9 @@ class ComfyAPIManager:
         if self.server_process:
             print("Shutting down ComfyUI server process group...")
             try:
-                # Get the process group ID (PGID) and send SIGTERM to the entire group
                 pgid = os.getpgid(self.server_process.pid)
                 os.killpg(pgid, signal.SIGTERM)
-                # Wait for a moment for graceful shutdown
                 time.sleep(3)
-                # Force kill if still running
                 os.killpg(pgid, signal.SIGKILL)
                 print("Server process group terminated.")
             except ProcessLookupError:
@@ -112,7 +109,7 @@ class ComfyAPIManager:
 
     def run_workflow(self, input_image_path, positive_prompt, output_filename="flux_output.png"):
         """
-        Starts the server, runs the workflow, and stops the server.
+        Starts the server, runs the workflow with a random seed, and stops the server.
         Returns the path to the generated output image.
         """
         try:
@@ -121,6 +118,11 @@ class ComfyAPIManager:
             uploaded_filename = self._upload_image(input_image_path)
             with open(self.workflow_api_json_path, 'r', encoding='utf-8') as f:
                 prompt = json.load(f)
+
+            # --- New: Use ComfyUI's built-in randomization ---
+            print("Setting seed node to randomize for this run.")
+            prompt[self.seed_node_id]["inputs"]["control_after_generate"] = "randomize"
+            # --- End new section ---
 
             prompt[self.load_image_node_id]["inputs"]["image"] = uploaded_filename
             prompt[self.clip_text_node_id]["inputs"]["text"] = positive_prompt
