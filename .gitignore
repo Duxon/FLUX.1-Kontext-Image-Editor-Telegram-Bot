@@ -1,0 +1,11 @@
+# Ignore Python's cache and virtual environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Ignore sensitive environment files
+.env
+
+# Ignore generated images
+*.png
