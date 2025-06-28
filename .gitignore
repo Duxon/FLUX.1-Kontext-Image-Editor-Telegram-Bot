@@ -7,5 +7,6 @@ venv/
 # Ignore sensitive environment files
 .env
 
-# Ignore generated images
+# Ignore generated images and logs
 *.png
+generation_log.txt

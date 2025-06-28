@@ -4,6 +4,8 @@ import logging
 import os
 import uuid
 import asyncio
+import glob
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -23,7 +25,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN not found in .env file. Please create it and add your token.")
 
-COMFYUI_PATH = "/home/duxon/Tools/ComfyUI" # Absolute path
+COMFYUI_PATH = "/home/duxon/Tools/ComfyUI"
 CONDA_ENV = "comfyui"
 WORKFLOW_PATH = "FLUX-Kontext-Python.json"
 SERVER_ADDRESS = "127.0.0.1:8188"
@@ -37,18 +39,39 @@ manager = ComfyAPIManager(SERVER_ADDRESS, CONDA_ENV, COMFYUI_PATH, WORKFLOW_PATH
 user_data = {}
 generation_lock = asyncio.Lock()
 
+# --- New Helper Functions ---
+
+def cleanup_workspace():
+    """Removes leftover image files from previous runs at startup."""
+    logger.info("Cleaning up workspace from previous runs...")
+    # Find all files matching the patterns
+    input_files = glob.glob("input_*.png")
+    output_files = glob.glob("flux_output.png")
+    
+    for f_path in input_files + output_files:
+        try:
+            os.remove(f_path)
+            logger.info(f"Removed leftover file: {f_path}")
+        except OSError as e:
+            logger.error(f"Error removing file {f_path}: {e}")
+
+def log_generation():
+    """Appends a timestamp to the generation log file."""
+    log_message = f"Image generated at: {datetime.now().isoformat()}\n"
+    try:
+        with open("generation_log.txt", "a") as log_file:
+            log_file.write(log_message)
+    except IOError as e:
+        logger.error(f"Failed to write to generation_log.txt: {e}")
+
 # --- Core Bot Logic ---
 
 async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: int, prompt: str, image_path: str):
     """The central function to run the ComfyUI workflow, protected by a lock and run in a separate thread."""
     async with generation_lock:
         try:
-            # Use the user's preferred message string
             await context.bot.send_message(chat_id, "✅ Your turn! Starting generation process... This will take around 5 minutes.")
             
-            # --- This is the critical fix ---
-            # Run the synchronous, blocking function in a separate thread
-            # This frees up the main event loop to handle other messages.
             output_image_path = await asyncio.to_thread(
                 manager.run_workflow,
                 input_image_path=image_path,
@@ -56,6 +79,9 @@ async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             )
 
             if output_image_path and os.path.exists(output_image_path):
+                # Log the successful generation before sending
+                log_generation()
+                
                 await context.bot.send_message(chat_id, "Generation complete! Sending your image...")
                 await context.bot.send_photo(chat_id, photo=open(output_image_path, 'rb'))
             else:
@@ -75,7 +101,7 @@ async def run_generation_process(context: ContextTypes.DEFAULT_TYPE, chat_id: in
             if chat_id in user_data:
                 del user_data[chat_id]
 
-# --- Telegram Handlers ---
+# --- Telegram Handlers (No changes here) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -104,7 +130,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in user_data and user_data[chat_id]["state"] == "awaiting_prompt":
         image_path = user_data[chat_id]["image_path"]
         await update.message.reply_text("Got it! Your request has been added to the queue.")
-        # We don't await the full process here, just schedule it
         asyncio.create_task(run_generation_process(context, chat_id, prompt, image_path))
     else:
         user_data[chat_id] = {"state": "awaiting_image", "prompt": prompt}
@@ -130,8 +155,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[chat_id] = {"state": "awaiting_prompt", "image_path": image_path}
         await update.message.reply_text("Got your image! Now, please send me a text prompt for it.")
 
-def main():
-    """Start the bot."""
+def run_bot():
+    """The main function to set up and run the bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -144,4 +169,7 @@ def main():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    main()
+    # Clean up workspace before starting the bot
+    cleanup_workspace()
+    # Run the bot
+    run_bot()
