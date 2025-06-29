@@ -38,9 +38,12 @@ class ComfyAPIManager:
             except (ConnectionRefusedError, socket.timeout):
                 return False
 
+    def is_server_running(self):
+        """Public method to check server status."""
+        return self._is_server_running()
+
     def _start_server(self):
         if self._is_server_running():
-            print("Server is already running.")
             return
 
         print("Starting ComfyUI server...")
@@ -66,6 +69,10 @@ class ComfyAPIManager:
         print("\nError: Server did not start in time.")
         self._stop_server()
         raise RuntimeError("Server failed to start.")
+        
+    def start_server(self):
+        """Public method to start the server."""
+        self._start_server()
 
     def _stop_server(self):
         if self.server_process:
@@ -83,8 +90,12 @@ class ComfyAPIManager:
             finally:
                 self.server_process = None
     
+    def stop_server(self):
+        """Public method to stop the server."""
+        self._stop_server()
+    
     def kill_server(self):
-        """Public method to safely stop the server."""
+        """Public alias for stopping the server."""
         self._stop_server()
 
     def _upload_image(self, filepath):
@@ -113,49 +124,41 @@ class ComfyAPIManager:
 
     def run_workflow(self, input_image_path, positive_prompt, output_filename="flux_output.png"):
         """
-        Starts the server, runs the workflow with a random seed, and stops the server.
-        Returns the path to the generated output image.
+        Runs the workflow on an already-started server. Does NOT manage server lifecycle.
         """
-        try:
-            self._start_server()
+        uploaded_filename = self._upload_image(input_image_path)
+        with open(self.workflow_api_json_path, 'r', encoding='utf-8') as f:
+            prompt = json.load(f)
 
-            uploaded_filename = self._upload_image(input_image_path)
-            with open(self.workflow_api_json_path, 'r', encoding='utf-8') as f:
-                prompt = json.load(f)
+        print("Setting seed node to randomize for this run.")
+        prompt[self.seed_node_id]["inputs"]["control_after_generate"] = "randomize"
+        prompt[self.load_image_node_id]["inputs"]["image"] = uploaded_filename
+        prompt[self.clip_text_node_id]["inputs"]["text"] = positive_prompt
 
-            print("Setting seed node to randomize for this run.")
-            prompt[self.seed_node_id]["inputs"]["control_after_generate"] = "randomize"
-
-            prompt[self.load_image_node_id]["inputs"]["image"] = uploaded_filename
-            prompt[self.clip_text_node_id]["inputs"]["text"] = positive_prompt
-
-            ws = websocket.WebSocket()
-            ws.connect(f"ws://{self.server_address}/ws?clientId={self.client_id}")
-            prompt_id = self._queue_prompt(prompt)['prompt_id']
-            
-            print("Workflow queued. Waiting for execution to finish...")
-            try:
-                while True:
-                    out = ws.recv()
-                    if isinstance(out, str):
-                        message = json.loads(out)
-                        if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
-                            break
-            finally:
-                ws.close()
-            print("Execution finished.")
-
-            history = self._get_history(prompt_id)[prompt_id]
-            for node_id in history['outputs']:
-                if 'images' in history['outputs'][node_id]:
-                    image_data = history['outputs'][node_id]['images'][0]
-                    image_bytes = self._get_image(image_data['filename'], image_data['subfolder'], image_data['type'])
-                    with open(output_filename, 'wb') as f:
-                        f.write(image_bytes)
-                    print(f"Saved output image to '{output_filename}'")
-                    return output_filename
+        ws = websocket.WebSocket()
+        ws.connect(f"ws://{self.server_address}/ws?clientId={self.client_id}")
+        prompt_id = self._queue_prompt(prompt)['prompt_id']
         
+        print("Workflow queued. Waiting for execution to finish...")
+        try:
+            while True:
+                out = ws.recv()
+                if isinstance(out, str):
+                    message = json.loads(out)
+                    if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
+                        break
         finally:
-            self._stop_server()
+            ws.close()
+        print("Execution finished.")
 
+        history = self._get_history(prompt_id)[prompt_id]
+        for node_id in history['outputs']:
+            if 'images' in history['outputs'][node_id]:
+                image_data = history['outputs'][node_id]['images'][0]
+                image_bytes = self._get_image(image_data['filename'], image_data['subfolder'], image_data['type'])
+                with open(output_filename, 'wb') as f:
+                    f.write(image_bytes)
+                print(f"Saved output image to '{output_filename}'")
+                return output_filename
+        
         return None

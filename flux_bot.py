@@ -5,6 +5,8 @@ import os
 import uuid
 import asyncio
 import glob
+import re
+import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -35,6 +37,8 @@ NODE_IDS = {
     "seed": "25"
 }
 GENERATION_TIME_MINUTES = 5
+VRAM_THRESHOLD_PERCENT = 20
+VRAM_POLL_INTERVAL_SECONDS = 300 # 5 minutes
 
 manager = ComfyAPIManager(SERVER_ADDRESS, CONDA_ENV, COMFYUI_PATH, WORKFLOW_PATH, NODE_IDS)
 user_data = {}
@@ -43,7 +47,7 @@ job_queue = asyncio.Queue()
 # --- Helper Functions ---
 
 def cleanup_workspace():
-    """Removes leftover image files from previous runs at startup."""
+    # (No changes to this function)
     logger.info("Cleaning up workspace from previous runs...")
     input_files = glob.glob("input_*.png")
     output_files = glob.glob("flux_output.png")
@@ -56,13 +60,32 @@ def cleanup_workspace():
             logger.error(f"Error removing file {f_path}: {e}")
 
 def log_generation():
-    """Appends a timestamp to the generation log file."""
+    # (No changes to this function)
     log_message = f"Image generated at: {datetime.now().isoformat()}\n"
     try:
         with open("generation_log.txt", "a") as log_file:
             log_file.write(log_message)
     except IOError as e:
         logger.error(f"Failed to write to generation_log.txt: {e}")
+        
+async def check_vram():
+    # (No changes to this function)
+    """Checks if VRAM usage is below the threshold using nvidia-smi in a non-blocking way."""
+    try:
+        command = "nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits"
+        result = await asyncio.to_thread(
+            subprocess.check_output, command, shell=True, text=True
+        )
+        used, total = map(int, re.split(r',\s*', result.strip()))
+        usage_percent = (used / total) * 100
+        logger.info(f"Current VRAM usage: {usage_percent:.2f}% ({used}/{total} MiB)")
+        return usage_percent < VRAM_THRESHOLD_PERCENT
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.warning("nvidia-smi command not found or failed. Assuming VRAM is available.")
+        return True
+    except Exception as e:
+        logger.error(f"An error occurred checking VRAM: {e}")
+        return True
 
 # --- Core Bot Logic ---
 
@@ -74,9 +97,33 @@ async def worker():
         prompt = job["prompt"]
         image_path = job["image_path"]
         context = job["context"]
+        prompt_message_id = job["prompt_message_id"]
 
         try:
-            await context.bot.send_message(chat_id, f"✅ Starting generation process... This will take around {GENERATION_TIME_MINUTES} minutes.")
+            # --- MODIFIED LOGIC: VRAM CHECK ---
+            # First, check if the server is already running from a previous job.
+            server_was_running = await asyncio.to_thread(manager.is_server_running)
+
+            # Only perform the VRAM check if the server is starting from a cold state.
+            if not server_was_running:
+                wait_message = None
+                while not await check_vram():
+                    message_text = f"High VRAM usage detected. Your job is paused. Will check again in {VRAM_POLL_INTERVAL_SECONDS // 60} minutes."
+                    if wait_message:
+                        await context.bot.edit_message_text(chat_id=chat_id, message_id=wait_message.message_id, text=message_text + f"\n(Last checked: {datetime.now().strftime('%H:%M:%S')})")
+                    else:
+                        wait_message = await context.bot.send_message(chat_id, message_text, reply_to_message_id=prompt_message_id)
+                    await asyncio.sleep(VRAM_POLL_INTERVAL_SECONDS)
+                
+                if wait_message:
+                     await context.bot.edit_message_text(chat_id=chat_id, message_id=wait_message.message_id, text="✅ VRAM is now available. Starting your job...")
+            
+            # --- END MODIFIED LOGIC ---
+
+            # Start server (this is a no-op if it was already running)
+            await asyncio.to_thread(manager.start_server)
+
+            await context.bot.send_message(chat_id, f"✅ Your turn! Starting generation process... This will take around {GENERATION_TIME_MINUTES} minutes.", reply_to_message_id=prompt_message_id)
             
             output_image_path = await asyncio.to_thread(
                 manager.run_workflow,
@@ -86,14 +133,14 @@ async def worker():
 
             if output_image_path and os.path.exists(output_image_path):
                 log_generation()
-                await context.bot.send_message(chat_id, "Generation complete! Sending your image...")
-                await context.bot.send_photo(chat_id, photo=open(output_image_path, 'rb'))
+                await context.bot.send_message(chat_id, "Generation complete! Sending your image...", reply_to_message_id=prompt_message_id)
+                await context.bot.send_photo(chat_id, photo=open(output_image_path, 'rb'), reply_to_message_id=prompt_message_id)
             else:
-                logger.warning(f"Workflow for chat {chat_id} did not produce an output file.")
+                await context.bot.send_message(chat_id, "Sorry, the generation failed to produce an image.", reply_to_message_id=prompt_message_id)
 
         except Exception as e:
             logger.error(f"An error occurred during generation for chat {chat_id}: {e}")
-            await context.bot.send_message(chat_id, f"An error occurred: {e}")
+            await context.bot.send_message(chat_id, f"An error occurred: {e}", reply_to_message_id=prompt_message_id)
         
         finally:
             logger.info(f"Cleaning up files for chat {chat_id}.")
@@ -102,12 +149,14 @@ async def worker():
             if 'output_image_path' in locals() and os.path.exists(output_image_path):
                 os.remove(output_image_path)
             
+            # Conditional server shutdown
             job_queue.task_done()
+            if job_queue.empty():
+                logger.info("Job queue is empty. Shutting down ComfyUI server.")
+                await asyncio.to_thread(manager.stop_server)
 
-# --- Telegram Handlers ---
-
+# --- Telegram Handlers (No changes below this line) ---
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """An undocumented command to show the last 20 log entries."""
     logger.info(f"/log command issued by user {update.effective_user.id}")
     log_file_path = "generation_log.txt"
     num_lines = 20
@@ -127,7 +176,6 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recent_lines = lines[-num_lines:]
         log_content = "".join(recent_lines)
         
-        # Using Markdown to format the log as a code block
         message = f"Here are the last {len(recent_lines)} log entries:\n```\n{log_content}```"
         await update.message.reply_text(message, parse_mode='Markdown')
 
@@ -135,9 +183,7 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error reading log file: {e}")
         await update.message.reply_text("Sorry, there was an error reading the log file.")
 
-
 async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kills the running ComfyUI process and clears the queue."""
     chat_id = update.message.chat_id
     logger.warning(f"Kill command issued by user {chat_id}.")
     
@@ -171,46 +217,51 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await update.message.reply_html(
-        f"Hi {user.first_name}!\n\nI am a bot that can reimagine an image based on your text prompt. "
-        "If I am busy, your request will be added to a queue and you'll be notified of your position."
-        "And by the way, I'm deleting all data immediately after processing."
+        f"Hi {user.first_name}!\n\n"
+        "I am a bot that can reimagine an image based on your text prompt. "
+        "If I am busy, your request will be added to a queue and you'll be notified of your position. "
+        "\n\nBy the way, I am deleting all data after processing each image. You can find my source code here: https://github.com/Duxon/FLUX.1-Kontext-Image-Editor-Telegram-Bot"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "<b>How to use this bot:</b>\n\n"
-        "1. Easiest way: Send an image and type your prompt in the caption.\n"
-        "2. Alternate ways: Send an image or a prompt first, and I will ask for the other piece.\n\n"
+        "1. **Easiest way:** Send an image and type your prompt in the caption.\n"
+        "2. **Alternate ways:** Send an image or a prompt first, and I will ask for the other piece.\n\n"
         "Your request will be processed in the order it was received."
     )
 
-async def handle_request(context: ContextTypes.DEFAULT_TYPE, chat_id: int, prompt: str, image_path: str):
+async def handle_request(context: ContextTypes.DEFAULT_TYPE, update: Update, prompt: str, image_path: str, prompt_message_id: int):
     """Adds a job to the queue and notifies the user of their position."""
+    chat_id = update.message.chat_id
+    
     position = job_queue.qsize() + 1
     wait_time = (position - 1) * GENERATION_TIME_MINUTES
 
     if wait_time > 0:
-        await context.bot.send_message(chat_id, f"Got it! You are number **{position}** in the queue.\nEstimated wait time is ~{wait_time} minutes.", parse_mode='Markdown')
+        await context.bot.send_message(chat_id, f"Got it! You are number **{position}** in the queue.\nEstimated wait time is ~{wait_time} minutes.", parse_mode='Markdown', reply_to_message_id=prompt_message_id)
     else:
-        await context.bot.send_message(chat_id, "Got it! Your request is next in line.")
+        await context.bot.send_message(chat_id, "Got it! Your request is next in line.", reply_to_message_id=prompt_message_id)
     
-    job = {"chat_id": chat_id, "prompt": prompt, "image_path": image_path, "context": context}
+    job = {"chat_id": chat_id, "prompt": prompt, "image_path": image_path, "context": context, "prompt_message_id": prompt_message_id}
     await job_queue.put(job)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     prompt = update.message.text
+    prompt_message_id = update.message.message_id
 
     if chat_id in user_data and user_data[chat_id]["state"] == "awaiting_prompt":
         image_path = user_data[chat_id]["image_path"]
         user_data.pop(chat_id, None)
-        await handle_request(context, chat_id, prompt, image_path)
+        await handle_request(context, update, prompt, image_path, prompt_message_id)
     else:
-        user_data[chat_id] = {"state": "awaiting_image", "prompt": prompt}
+        user_data[chat_id] = {"state": "awaiting_image", "prompt": prompt, "prompt_message_id": prompt_message_id}
         await update.message.reply_text("Got your prompt! Now, please send me the image.")
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
+    image_message_id = update.message.message_id
     
     file = await context.bot.get_file(update.message.photo[-1].file_id)
     image_path = f"input_{uuid.uuid4()}.png"
@@ -219,26 +270,23 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = update.message.caption
 
     if prompt:
-        await handle_request(context, chat_id, prompt, image_path)
+        await handle_request(context, update, prompt, image_path, image_message_id)
     elif chat_id in user_data and user_data[chat_id]["state"] == "awaiting_image":
         saved_prompt = user_data[chat_id]["prompt"]
+        prompt_message_id = user_data[chat_id]["prompt_message_id"]
         user_data.pop(chat_id, None)
-        await handle_request(context, chat_id, saved_prompt, image_path)
+        await handle_request(context, update, saved_prompt, image_path, prompt_message_id)
     else:
         user_data[chat_id] = {"state": "awaiting_prompt", "image_path": image_path}
         await update.message.reply_text("Got your image! Now, please send me a text prompt for it.")
 
-# --- New: post_init function to start background tasks ---
 async def post_init(application: Application):
-    """A callback to run after the application is initialized."""
     logger.info("Application initialized. Starting background worker.")
     asyncio.create_task(worker())
 
 def main():
-    """Start the bot."""
     application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
-    # Add all handlers, including the new /log command
     application.add_handler(CommandHandler("log", log_command))
     application.add_handler(CommandHandler("kill", kill))
     application.add_handler(CommandHandler("start", start))
