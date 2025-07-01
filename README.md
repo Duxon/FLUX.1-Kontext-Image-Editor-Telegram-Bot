@@ -39,11 +39,11 @@ This bot listens for image and prompt submissions on Telegram, spins up the Comf
 
 ### 🛠️ Setup and Installation
 
-Follow these steps to get your own instance of TeleFlux running.
+Follow these steps to get your own instance of TeleFlux running. You need to have ComfyUI installed and properly set up. I'm getting good results using the quantized [6bit GGUF from here](https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF).
 
 **1. Clone the Repository**
 ```bash
-git clone [<your-repository-url>](https://github.com/Duxon/FLUX.1-Kontext-Image-Editor-Telegram-Bot.git)
+git clone https://github.com/Duxon/FLUX.1-Kontext-Image-Editor-Telegram-Bot.git
 cd FLUX.1-Kontext-Image-Editor-Telegram-Bot
 ```
 
