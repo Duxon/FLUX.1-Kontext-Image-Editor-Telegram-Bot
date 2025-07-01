@@ -11,6 +11,7 @@ import subprocess
 import time
 import socket
 import signal
+from PIL import Image
 
 class ComfyAPIManager:
     """A class to manage the ComfyUI server and workflow execution."""
@@ -27,6 +28,8 @@ class ComfyAPIManager:
         self.load_image_node_id = node_ids["load_image"]
         self.clip_text_node_id = node_ids["clip_text"]
         self.seed_node_id = node_ids["seed"]
+        self.image_scaler_node_id = node_ids.get("image_scaler") # Use .get for graceful failure
+
 
     def _is_server_running(self):
         host, port = self.server_address.split(':')
@@ -129,6 +132,27 @@ class ComfyAPIManager:
         uploaded_filename = self._upload_image(input_image_path)
         with open(self.workflow_api_json_path, 'r', encoding='utf-8') as f:
             prompt = json.load(f)
+
+        img = Image.open(input_image_path)
+        width, height = img.size
+
+        # --- THE CORRECT FIX ---
+        # Update ALL nodes that depend on image dimensions to match the input image.
+        
+        # 1. Set the latent image (canvas) size
+        prompt["27"]["inputs"]["width"] = width
+        prompt["27"]["inputs"]["height"] = height
+        
+        # 2. Set the model sampling size
+        prompt["30"]["inputs"]["width"] = width
+        prompt["30"]["inputs"]["height"] = height
+        
+        # 3. Set the reference image scaler size (This is the crucial part)
+        if self.image_scaler_node_id:
+            prompt[self.image_scaler_node_id]["inputs"]["width"] = width
+            prompt[self.image_scaler_node_id]["inputs"]["height"] = height
+            print(f"Set image_scaler node ({self.image_scaler_node_id}) to {width}x{height}")
+        # --- END FIX ---
 
         print("Setting seed node to randomize for this run.")
         prompt[self.seed_node_id]["inputs"]["control_after_generate"] = "randomize"
